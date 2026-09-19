@@ -1,0 +1,20 @@
+Tools needed for the Personal AI Assistant
+Category	Tool	Purpose
+* Code editor	VS Code	Write and manage the project code
+* Programming language	Python 3.11+	Build the Windows assistant
+* Version control	Git + GitHub	Save code changes and backups
+* Local AI runtime	Ollama	Run AI models on your laptop
+* Main local model	qwen3:4b	Understand questions and voice commands
+* Lighter backup model	llama3.2:3b	Use if the main model feels slow
+* Voice to text	faster-whisper	Change your English voice into text
+* Speech-to-text model	Whisper base.en	Fast English voice recognition
+* Text to speech	Piper TTS	Make the assistant speak its reply
+* Desktop interface	CustomTkinter	Create the Windows app interface
+* Database	SQLite	Save reminders, preferences, and custom commands
+* App control	Python subprocess and os	Open Camera, Calculator, Chrome, files, etc.
+* Website/search control	Python webbrowser	Open Google, YouTube, and websites
+* Weather data	OpenWeather API	Get live weather information
+* Reminders	APScheduler	Run reminders at the correct time
+* Camera access	Windows Camera URI / OpenCV	Open or later use the laptop camera
+* Environment variables	.env + python-dotenv	Keep API keys and settings private
+* Packaging	PyInstaller	Convert the Python app into a Windows .exe

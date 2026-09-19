@@ -1,0 +1,23 @@
+{
+  "auto_approve": [
+    "open_app",
+    "open_folder",
+    "open_website",
+    "open_camera",
+    "search_web",
+    "show_time",
+    "create_reminder"
+  ],
+  "require_confirmation": [
+    "delete_file",
+    "overwrite_file",
+    "send_email",
+    "send_message",
+    "install_software",
+    "uninstall_software",
+    "shutdown_computer",
+    "restart_computer",
+    "change_settings",
+    "upload_file"
+  ]
+}
