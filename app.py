@@ -2,7 +2,11 @@ import threading
 import subprocess
 import sqlite3
 import re
+import json
+import os
+import queue
 import webbrowser
+from pathlib import Path
 from datetime import datetime, timedelta
 from urllib.parse import quote_plus
 
@@ -12,12 +16,16 @@ import pyttsx3
 import sounddevice as sd
 from scipy.io.wavfile import write
 from faster_whisper import WhisperModel
+from vosk import Model, KaldiRecognizer, SetLogLevel
 
 
 MODEL_NAME = "qwen3:4b"
+VOSK_MODEL_PATH = "models/vosk-model-small-en-us-0.15"
 SAMPLE_RATE = 16000
 RECORD_SECONDS = 6
 AUDIO_FILE = "nova_voice.wav"
+
+SetLogLevel(-1)
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -29,6 +37,8 @@ class NovaApp(ctk.CTk):
 
         self.whisper_model = None
         self.db_lock = threading.Lock()
+        self.wake_stop_event = threading.Event()
+        self.wake_thread = None
 
         self.setup_database()
 
@@ -40,8 +50,8 @@ class NovaApp(ctk.CTk):
         self.create_chat_window()
         self.create_floating_widget()
         self.check_reminders()
+        self.start_wake_listener()
 
-        # Start with only the floating NOVA widget visible.
         self.withdraw()
 
     def setup_database(self):
@@ -57,8 +67,53 @@ class NovaApp(ctk.CTk):
             )
         """)
 
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fact TEXT NOT NULL UNIQUE,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMPT
+                    )
+                """)
+
         self.db.commit()
 
+        def save_memory(self, fact):
+            with self.db_lock:
+                self.cursor.execute(
+                    "INSERT OR IGNORE INTO memories (fact) VALUES (?)",
+                    (fact,)
+                )
+                self.db.commit()
+
+    def get_memories(self):
+        with self.db_lock:
+            self.cursor.execute("""
+                SELECT fact
+                FROM memories
+                ORDER BY memory_id DESC
+                LIMIT 20
+            """)
+            return [row[0] for row in self.cursor.fetchall()]
+
+    def forget_memory(self, fact):
+        with self.db_lock:
+            self.cursor.execute(
+                "DELETE FROM memories WHERE LOWER(fact) = LOWER(?)",
+                (fact,)
+            )
+            deleted = self.cursor.rowcount
+            self.db.commit()
+
+        return deleted > 0
+
+    def get_memory_context(self):
+        memories = self.get_memories()
+
+        if not memories:
+            return "No saved personal memories."
+
+        return "\n".join(f"- {memory}" for memory in memories)
+    
     def save_reminder(self, task, reminder_time):
         with self.db_lock:
             self.cursor.execute(
@@ -77,9 +132,9 @@ class NovaApp(ctk.CTk):
                 WHERE completed = 0 AND reminder_time <= ?
             """, (now,))
 
-            due_reminders = self.cursor.fetchall()
+            reminders = self.cursor.fetchall()
 
-            for reminder_id, _ in due_reminders:
+            for reminder_id, _ in reminders:
                 self.cursor.execute(
                     "UPDATE reminders SET completed = 1 WHERE reminder_id = ?",
                     (reminder_id,)
@@ -87,13 +142,11 @@ class NovaApp(ctk.CTk):
 
             self.db.commit()
 
-        for _, task in due_reminders:
+        for _, task in reminders:
             message = f"Reminder: {task}"
             self.add_message(f"NOVA: {message}\n\n")
-            self.set_status("Reminder!", "#f6e05e")
-
             threading.Thread(
-                target=self.speak,
+                target=self.speak_and_restart,
                 args=(message,),
                 daemon=True
             ).start()
@@ -109,7 +162,7 @@ class NovaApp(ctk.CTk):
 
         self.status_label = ctk.CTkLabel(
             self,
-            text="Local AI Assistant • Ready",
+            text="Background listener • Ready",
             text_color="#68d391"
         )
         self.status_label.pack(pady=(0, 15))
@@ -118,7 +171,7 @@ class NovaApp(ctk.CTk):
         self.chat_box.pack(fill="both", expand=True, padx=25, pady=10)
         self.chat_box.insert(
             "end",
-            "NOVA: Hello! Click Listen and speak your question.\n\n"
+            "NOVA: I am running in the background. Say NOVA to wake me.\n\n"
         )
         self.chat_box.configure(state="disabled")
 
@@ -170,7 +223,7 @@ class NovaApp(ctk.CTk):
 
         self.widget_status = ctk.CTkLabel(
             card,
-            text="Ready to help",
+            text="Say NOVA",
             text_color="#68d391"
         )
         self.widget_status.pack(pady=(0, 12))
@@ -223,9 +276,9 @@ class NovaApp(ctk.CTk):
         self.drag_y = event.y_root - self.widget.winfo_y()
 
     def drag_widget(self, event):
-        x = event.x_root - self.drag_x
-        y = event.y_root - self.drag_y
-        self.widget.geometry(f"+{x}+{y}")
+        self.widget.geometry(
+            f"+{event.x_root - self.drag_x}+{event.y_root - self.drag_y}"
+        )
 
     def show_chat(self):
         self.deiconify()
@@ -236,20 +289,9 @@ class NovaApp(ctk.CTk):
         self.withdraw()
 
     def close_app(self):
+        self.wake_stop_event.set()
         self.db.close()
         self.destroy()
-
-    def open_camera(self):
-        try:
-            subprocess.Popen("start microsoft.windows.camera:", shell=True)
-        except Exception as error:
-            print(f"Camera error: {error}")
-
-    def add_message(self, message):
-        self.chat_box.configure(state="normal")
-        self.chat_box.insert("end", message)
-        self.chat_box.see("end")
-        self.chat_box.configure(state="disabled")
 
     def set_status(self, text, color="#68d391"):
         self.status_label.configure(text=text, text_color=color)
@@ -260,20 +302,148 @@ class NovaApp(ctk.CTk):
         self.widget_listen_button.configure(state=state)
         self.send_button.configure(state=state)
 
-    def speak(self, text):
+    def add_message(self, message):
+        self.chat_box.configure(state="normal")
+        self.chat_box.insert("end", message)
+        self.chat_box.see("end")
+        self.chat_box.configure(state="disabled")
+
+    def open_camera(self):
+        subprocess.Popen("start microsoft.windows.camera:", shell=True)
+
+    def open_folder(self, folder_name):
+        folders = {
+            "downloads": Path.home() / "Downloads",
+            "documents": Path.home() / "Documents",
+            "pictures": Path.home() / "Pictures",
+            "music": Path.home() / "Music",
+            "videos": Path.home() / "Videos",
+            "desktop": Path.home() / "Desktop"
+        }
+
+        folder_path = folders.get(folder_name.lower())
+
+        if folder_path and folder_path.exists():
+            os.startfile(str(folder_path))
+            return f"Opening {folder_name}."
+
+        return None
+
+    def open_installed_app(self, app_name):
         try:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 175)
-            engine.setProperty("volume", 1.0)
-            engine.say(text)
-            engine.runAndWait()
+            command = (
+                "Get-StartApps | Select-Object Name, AppID | "
+                "ConvertTo-Json -Compress"
+            )
+
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", command],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+
+            apps = json.loads(result.stdout)
+
+            if isinstance(apps, dict):
+                apps = [apps]
+
+            search_name = app_name.lower().strip()
+            selected_app = None
+
+            for app in apps:
+                if app["Name"].lower() == search_name:
+                    selected_app = app
+                    break
+
+            if not selected_app:
+                for app in apps:
+                    if search_name in app["Name"].lower():
+                        selected_app = app
+                        break
+
+            if not selected_app:
+                return None
+
+            app_id = selected_app["AppID"]
+            app_display_name = selected_app["Name"]
+
+            if app_id.lower().endswith((".lnk", ".exe")):
+                os.startfile(app_id)
+            else:
+                subprocess.Popen([
+                    "explorer.exe",
+                    f"shell:AppsFolder\\{app_id}"
+                ])
+
+            return f"Opening {app_display_name}."
+
         except Exception as error:
-            print(f"Speech error: {error}")
+            print(f"App launcher error: {error}")
+            return None
+
+    def start_wake_listener(self):
+        if self.wake_thread and self.wake_thread.is_alive():
+            return
+
+        self.wake_stop_event.clear()
+
+        self.wake_thread = threading.Thread(
+            target=self.wake_word_listener,
+            daemon=True
+        )
+        self.wake_thread.start()
+
+    def stop_wake_listener(self):
+        self.wake_stop_event.set()
+
+    def wake_word_listener(self):
+        try:
+            model = Model(VOSK_MODEL_PATH)
+            recognizer = KaldiRecognizer(model, SAMPLE_RATE)
+            audio_queue = queue.Queue()
+
+            def audio_callback(indata, frames, time, status):
+                if not self.wake_stop_event.is_set():
+                    audio_queue.put(bytes(indata))
+
+            with sd.RawInputStream(
+                samplerate=SAMPLE_RATE,
+                blocksize=8000,
+                dtype="int16",
+                channels=1,
+                callback=audio_callback
+            ):
+                while not self.wake_stop_event.is_set():
+                    try:
+                        audio_data = audio_queue.get(timeout=0.2)
+                    except queue.Empty:
+                        continue
+
+                    if recognizer.AcceptWaveform(audio_data):
+                        result = json.loads(recognizer.Result())
+                        heard_text = result.get("text", "").lower()
+
+                        if "nova" in heard_text:
+                            self.wake_stop_event.set()
+                            self.after(0, self.on_wake_word_detected)
+                            return
+
+        except Exception as error:
+            print(f"Wake-word error: {error}")
+
+    def on_wake_word_detected(self):
+        self.set_status("NOVA detected. Speak now...", "#f6e05e")
+        self.set_buttons_state("disabled")
+        self.after(400, self.start_recording_thread)
 
     def start_listening(self):
-        self.set_status("Listening...", "#f6e05e")
+        self.stop_wake_listener()
+        self.set_status("Speak now...", "#f6e05e")
         self.set_buttons_state("disabled")
+        self.after(400, self.start_recording_thread)
 
+    def start_recording_thread(self):
         threading.Thread(
             target=self.record_and_transcribe,
             daemon=True
@@ -292,14 +462,6 @@ class NovaApp(ctk.CTk):
                     device="cpu",
                     compute_type="int8"
                 )
-
-            self.after(
-                0,
-                lambda: self.set_status(
-                    f"Speak now ({RECORD_SECONDS} seconds)...",
-                    "#f6e05e"
-                )
-            )
 
             audio = sd.rec(
                 int(RECORD_SECONDS * SAMPLE_RATE),
@@ -354,28 +516,48 @@ class NovaApp(ctk.CTk):
 
     def voice_error(self, message):
         self.add_message(f"NOVA: {message}\n\n")
-        self.set_status("Ready to help")
+        self.set_status("Say NOVA")
         self.set_buttons_state("normal")
+        self.start_wake_listener()
 
-    def send_message(self, event=None):
-        user_message = self.message_entry.get().strip()
+    def speak(self, text):
+        try:
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 175)
+            engine.setProperty("volume", 1.0)
+            engine.say(text)
+            engine.runAndWait()
+        except Exception as error:
+            print(f"Speech error: {error}")
 
-        if not user_message:
-            return
-
-        self.add_message(f"You: {user_message}\n")
-        self.message_entry.delete(0, "end")
-        self.set_status("NOVA is thinking...", "#f6e05e")
-        self.set_buttons_state("disabled")
-
-        threading.Thread(
-            target=self.get_nova_response,
-            args=(user_message,),
-            daemon=True
-        ).start()
+    def speak_and_restart(self, text):
+        self.stop_wake_listener()
+        self.speak(text)
+        self.after(0, self.start_wake_listener)
 
     def handle_command(self, message):
         command = message.lower().strip()
+
+        if command.startswith("remember that "):
+            fact = message[len("remember that "):].strip()
+            self.save_memory(fact)
+            return f"Okay. I will remember that {fact}."
+
+        if command in ("what do you remember about me?", "show my memories"):
+            memories = self.get_memories()
+
+            if not memories:
+                return "I do not have any saved memories yet."
+
+            return "I remember: " + ". ".join(memories)
+
+        if command.startswith("forget that "):
+            fact = message[len("forget that "):].strip()
+
+            if self.forget_memory(fact):
+                return f"Okay. I forgot that {fact}."
+
+            return "I could not find that memory."
 
         reminder_match = re.match(
             r"^remind me in (\d+) (minute|minutes|hour|hours) to (.+)",
@@ -395,10 +577,7 @@ class NovaApp(ctk.CTk):
 
             self.save_reminder(task, reminder_time)
 
-            return (
-                f"Okay. I will remind you in {number} {unit} "
-                f"to {task}."
-            )
+            return f"Okay. I will remind you in {number} {unit} to {task}."
 
         if command in ("show reminders", "my reminders"):
             with self.db_lock:
@@ -413,16 +592,16 @@ class NovaApp(ctk.CTk):
             if not reminders:
                 return "You have no active reminders."
 
-            reminder_list = []
+            items = []
 
             for task, reminder_time in reminders:
                 formatted_time = datetime.fromisoformat(
                     reminder_time
                 ).strftime("%I:%M %p")
 
-                reminder_list.append(f"{task} at {formatted_time}")
+                items.append(f"{task} at {formatted_time}")
 
-            return "Your reminders are: " + ". ".join(reminder_list)
+            return "Your reminders are: " + ". ".join(items)
 
         if "open camera" in command:
             self.open_camera()
@@ -432,7 +611,7 @@ class NovaApp(ctk.CTk):
             subprocess.Popen("start calc", shell=True)
             return "Opening Calculator."
 
-        if "open chrome" in command or "open browser" in command:
+        if "open browser" in command:
             webbrowser.open("https://www.google.com")
             return "Opening your browser."
 
@@ -458,23 +637,56 @@ class NovaApp(ctk.CTk):
             current_time = datetime.now().strftime("%I:%M %p")
             return f"The current time is {current_time}."
 
+        if command.startswith("open "):
+            target = message[5:].strip()
+
+            folder_answer = self.open_folder(target)
+            if folder_answer:
+                return folder_answer
+
+            app_answer = self.open_installed_app(target)
+            if app_answer:
+                return app_answer
+
+            return f"I could not find {target} in your installed apps."
+
         return None
 
     def deliver_response(self, answer):
         self.after(0, lambda: self.add_message(f"NOVA: {answer}\n\n"))
 
         threading.Thread(
-            target=self.speak,
+            target=self.speak_and_restart,
             args=(answer,),
             daemon=True
         ).start()
 
+    def send_message(self, event=None):
+        user_message = self.message_entry.get().strip()
+
+        if not user_message:
+            return
+
+        self.add_message(f"You: {user_message}\n")
+        self.message_entry.delete(0, "end")
+        self.set_status("NOVA is thinking...", "#f6e05e")
+        self.set_buttons_state("disabled")
+
+        threading.Thread(
+            target=self.get_nova_response,
+            args=(user_message,),
+            daemon=True
+        ).start()
+
     def get_nova_response(self, user_message):
+        response_sent = False
+
         try:
             command_answer = self.handle_command(user_message)
 
             if command_answer:
                 self.deliver_response(command_answer)
+                response_sent = True
                 return
 
             response = ollama.chat(
@@ -483,19 +695,29 @@ class NovaApp(ctk.CTk):
                     {
                         "role": "system",
                         "content": (
-                            "You are NOVA, a helpful personal AI assistant. "
-                            "Give clear, friendly, concise answers."
+                            "You are NOVA, a personal AI assistant. "
+                            "Be friendly, clear, and helpful. "
+                            "Keep normal answers under 45 words. "
+                            "Use simple English and short explanations. "
+                            "Do not give long lists unless the user asks."
                         )
                     },
                     {
                         "role": "user",
                         "content": user_message
                     }
-                ]
+                ],
+                think=False,
+                keep_alive="30m",
+                options={
+                    "temperature": 0.4,
+                    "num_predict": 120
+                }
             )
 
             answer = response["message"]["content"]
             self.deliver_response(answer)
+            response_sent = True
 
         except Exception as error:
             self.after(
@@ -504,16 +726,13 @@ class NovaApp(ctk.CTk):
             )
 
         finally:
-            self.after(
-                0,
-                lambda: self.set_status("Ready to help")
-            )
-            self.after(
-                0,
-                lambda: self.set_buttons_state("normal")
-            )
+            self.after(0, lambda: self.set_status("Say NOVA"))
+            self.after(0, lambda: self.set_buttons_state("normal"))
+
+            if not response_sent:
+                self.after(0, self.start_wake_listener)
 
 
 if __name__ == "__main__":
     app = NovaApp()
-    app.mainloop()
+    app.mainloop() 
