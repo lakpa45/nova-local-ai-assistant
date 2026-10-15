@@ -1,0 +1,17 @@
+[
+  "close_app",
+  "confirm_action",
+  "forget_topic",
+  "get_time",
+  "get_weather",
+  "learn_topic",
+  "list_learned_topics",
+  "open_app",
+  "open_website",
+  "recall_information",
+  "reject_action",
+  "remember_information",
+  "search_web",
+  "set_reminder",
+  "unknown"
+]

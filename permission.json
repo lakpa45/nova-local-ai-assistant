@@ -6,9 +6,13 @@
     "open_camera",
     "search_web",
     "show_time",
-    "create_reminder"
+    "create_reminder",
+    "save_memory",
+    "show_memories",
+    "show_reminders"
   ],
   "require_confirmation": [
+    "forget_memory",
     "delete_file",
     "overwrite_file",
     "send_email",

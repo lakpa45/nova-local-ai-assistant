@@ -1,0 +1,16 @@
+{
+  "work_protocol": [
+    {"action": "open_app", "target": "chrome"},
+    {"action": "open_app", "target": "vscode"},
+    {"action": "set_volume", "target": "30"}
+  ],
+  "relax_protocol": [
+    {"action": "open_website", "target": "youtube"},
+    {"action": "set_volume", "target": "50"},
+    {"action": "open_app", "target": "spotify"}
+  ],
+  "system_check_protocol": [
+    {"action": "show_time", "target": ""},
+    {"action": "show_memories", "target": ""}
+  ]
+}
