@@ -255,24 +255,31 @@ class NovaApp(ctk.CTk):
     def create_chat_window(self):
         ctk.CTkLabel(
             self,
-            text="NOVA",
+            text="JARVIS COMMAND CONSOLE",
             font=ctk.CTkFont(
-                size=32,
+                family="Consolas",
+                size=24,
                 weight="bold"
-            )
+            ),
+            text_color="#00F2FF"
         ).pack(pady=(20, 0))
 
         self.status_label = ctk.CTkLabel(
             self,
-            text="Background listener • Ready",
-            text_color="#68d391"
+            text="System Online • Ready",
+            text_color="#00F2FF",
+            font=("Consolas", 12)
         )
         self.status_label.pack(pady=(0, 15))
 
         self.chat_box = ctk.CTkTextbox(
             self,
             wrap="word",
-            font=("Arial", 15)
+            font=("Consolas", 14),
+            fg_color="#0B0E14",
+            text_color="#E0FFFF",
+            border_color="#00F2FF",
+            border_width=1
         )
         self.chat_box.pack(
             fill="both",
@@ -287,7 +294,7 @@ class NovaApp(ctk.CTk):
         )
         self.chat_box.configure(state="disabled")
 
-        bottom_frame = ctk.CTkFrame(self)
+        bottom_frame = ctk.CTkFrame(self, fg_color="transparent")
         bottom_frame.pack(
             fill="x",
             padx=25,
@@ -296,8 +303,12 @@ class NovaApp(ctk.CTk):
 
         self.message_entry = ctk.CTkEntry(
             bottom_frame,
-            placeholder_text="Type a message for NOVA...",
-            font=("Arial", 15)
+            placeholder_text="> ENTER COMMAND...",
+            font=("Consolas", 15),
+            fg_color="#161B22",
+            text_color="#00F2FF",
+            border_color="#00F2FF",
+            border_width=1
         )
         self.message_entry.pack(
             side="left",
@@ -316,8 +327,10 @@ class NovaApp(ctk.CTk):
             text="🎙 Listen",
             width=105,
             command=self.start_listening,
-            fg_color="#805ad5",
-            hover_color="#6b46c1"
+            fg_color="#00F2FF",
+            text_color="#0B0E14",
+            hover_color="#00C2CC",
+            corner_radius=0
         )
         self.listen_button.pack(
             side="right",
@@ -329,7 +342,11 @@ class NovaApp(ctk.CTk):
             bottom_frame,
             text="Send",
             width=90,
-            command=self.send_message
+            command=self.send_message,
+            fg_color="#00F2FF",
+            text_color="#0B0E14",
+            hover_color="#00C2CC",
+            corner_radius=0
         )
         self.send_button.pack(
             side="right",
@@ -350,17 +367,22 @@ class NovaApp(ctk.CTk):
 
         card = ctk.CTkFrame(
             self.widget,
-            corner_radius=20
+            corner_radius=0,
+            fg_color="#0B0E14",
+            border_color="#00F2FF",
+            border_width=2
         )
         card.pack(fill="both", expand=True)
 
         title = ctk.CTkLabel(
             card,
-            text="✦  JARVIS",
+            text="✦  JARVIS HUD",
             font=ctk.CTkFont(
-                size=22,
+                family="Consolas",
+                size=18,
                 weight="bold"
-            )
+            ),
+            text_color="#00F2FF"
         )
         title.pack(pady=(16, 2))
 
@@ -372,7 +394,7 @@ class NovaApp(ctk.CTk):
             self.hud_frame,
             text="CPU: 0%",
             font=("Consolas", 12),
-            text_color="#63b3ed"
+            text_color="#00F2FF"
         )
         self.cpu_label.pack(side="left", padx=10)
 
@@ -380,7 +402,7 @@ class NovaApp(ctk.CTk):
             self.hud_frame,
             text="RAM: 0%",
             font=("Consolas", 12),
-            text_color="#63b3ed"
+            text_color="#00F2FF"
         )
         self.ram_label.pack(side="left", padx=10)
 
@@ -389,16 +411,17 @@ class NovaApp(ctk.CTk):
             card,
             width=200,
             height=40,
-            bg="#2d3748",
-            highlightthickness=0,
-            corner_radius=10
+            bg="#0B0E14",
+            highlightthickness=1,
+            highlightbackground="#00F2FF"
         )
         self.viz_canvas.pack(pady=10)
 
         self.widget_status = ctk.CTkLabel(
             card,
             text="Awaiting orders",
-            text_color="#68d391"
+            text_color="#00F2FF",
+            font=("Consolas", 12)
         )
         self.widget_status.pack(pady=(0, 12))
 
@@ -580,7 +603,7 @@ class NovaApp(ctk.CTk):
     def set_status(
         self,
         text,
-        color="#68d391"
+        color="#00F2FF"
     ):
         self.status_label.configure(
             text=text,
